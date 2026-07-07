@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { Profile, Meeting, AttendanceRecord, WeeklyDrill, WeeklyDrillSubmission, MeetingAssignment } from "./types";
+import { auth } from "./firebase";
+import { signOut } from "firebase/auth";
+import { 
+  listenToAuthChanges, 
+  subscribeToAllState, 
+  joinMeetingAttendance, 
+  dismissReminder, 
+  dismissAllReminders 
+} from "./firebaseService";
 
 // Component imports
 import AuthPage from "./components/AuthPage";
@@ -61,119 +70,83 @@ export default function App() {
   // Loading & error cues
   const [fetching, setFetching] = useState(false);
 
-  // Check for cached browser session key on bootup
+  // 1. Listen to Auth changes + seed DB if empty
   useEffect(() => {
-    const cached = localStorage.getItem("bincom_user_session");
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as Profile;
-        setProfile(parsed);
-      } catch (e) {
-        console.error("Cache parsing error", e);
-      }
-    }
-  }, []);
+    // Attempt automatic seed on startup (safe, skips if already seeded)
+    import("./seed").then(({ seedDatabase }) => {
+      seedDatabase().catch(err => console.error("Auto seeding failed:", err));
+    });
 
-  // Sync details from server whenever profile changes or is updated
-  const fetchLatestState = async (userKey?: string) => {
-    if (!profile && !userKey) return;
-    setFetching(true);
-    
-    const key = userKey || profile?.id;
-    try {
-      const res = await fetch(`/api/state?userId=${key}`);
-      if (res.ok) {
-        const data = await res.json();
-        setState(data);
-        
-        // Sync custom profile changes in case admin tweaked things
-        if (profile) {
-          const matchedProfile = data.profiles.find((p: Profile) => p.id === profile.id);
-          if (matchedProfile) {
-            setProfile(matchedProfile);
-            localStorage.setItem("bincom_user_session", JSON.stringify(matchedProfile));
-          } else {
-            // User session is stale/wiped on the server registry, log out safely
-            console.warn("Local session is stale/missing on server registry. Clearing...");
-            handleLogout();
-          }
+    const unsubscribe = listenToAuthChanges((userProfile) => {
+      setProfile(userProfile);
+      if (userProfile) {
+        if (userProfile.role === "admin") {
+          setActiveTab("admin");
+        } else {
+          setActiveTab("dashboard");
         }
       }
-    } catch (err) {
-      console.error("Failed to sync backend ledger statistics:", err);
-    } finally {
-      setFetching(false);
-    }
-  };
+    });
 
-  useEffect(() => {
-    if (profile) {
-      fetchLatestState();
-      // Set default tab accordingly
-      if (profile.role === "admin") {
-        setActiveTab("admin");
-      } else {
-        setActiveTab("dashboard");
-      }
-    }
-  }, [profile?.id]);
+    return () => unsubscribe();
+  }, []);
 
+  // 2. Real-time Firebase State synchronization
   useEffect(() => {
     if (!profile) return;
-    const intervalId = setInterval(() => {
-      fetchLatestState();
-    }, 10000);
-    return () => clearInterval(intervalId);
+    setFetching(true);
+
+    const unsubscribe = subscribeToAllState(profile.id, profile, (compiledState) => {
+      setState(compiledState);
+      setFetching(false);
+
+      // Instantly apply state updates if Admin tweaks current user profile on the server
+      const matchedProfile = compiledState.profiles.find((p: Profile) => p.id === profile.id);
+      if (matchedProfile) {
+        if (JSON.stringify(matchedProfile) !== JSON.stringify(profile)) {
+          setProfile(matchedProfile);
+        }
+      }
+    });
+
+    return () => unsubscribe();
   }, [profile?.id]);
+
+  const fetchLatestState = async () => {
+    // No-op placeholder to prevent compile breaking in other tabs, since it's now fully real-time synced!
+  };
 
   const handleAuthSuccess = (newProfile: Profile) => {
     setProfile(newProfile);
-    localStorage.setItem("bincom_user_session", JSON.stringify(newProfile));
   };
 
-  const handleLogout = () => {
-    setProfile(null);
-    localStorage.removeItem("bincom_user_session");
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setProfile(null);
+    } catch (err) {
+      console.error("Sign out error", err);
+    }
   };
 
   const handleProfileSynced = (updatedProfile: Profile) => {
     setProfile(updatedProfile);
-    localStorage.setItem("bincom_user_session", JSON.stringify(updatedProfile));
-    fetchLatestState(updatedProfile.id);
   };
 
   // Mark attendance log request
   const handleMarkAttendance = async (meetingId: string) => {
     if (!profile) return;
     try {
-      const res = await fetch("/api/meetings/join", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id, meetingId })
-      });
-      if (res.ok) {
-        fetchLatestState();
-      }
+      await joinMeetingAttendance(profile.id, meetingId);
     } catch (error) {
-      console.error(error);
+      console.error("Failed to mark attendance", error);
     }
   };
 
   // Dismiss a single user reminder/notification
   const handleDismissReminder = async (id: string) => {
     try {
-      const res = await fetch("/api/reminders/dismiss", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id })
-      });
-      if (res.ok) {
-        // Optimistically update reminders state to instantly reflect in UI
-        setState(prev => ({
-          ...prev,
-          reminders: prev.reminders.filter(r => r.id !== id)
-        }));
-      }
+      await dismissReminder(id);
     } catch (e) {
       console.error("Error dismissing reminder:", e);
     }
@@ -183,17 +156,7 @@ export default function App() {
   const handleDismissAllReminders = async () => {
     if (!profile) return;
     try {
-      const res = await fetch("/api/reminders/dismiss", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: profile.id })
-      });
-      if (res.ok) {
-        setState(prev => ({
-          ...prev,
-          reminders: []
-        }));
-      }
+      await dismissAllReminders(profile.id);
     } catch (e) {
       console.error("Error dismissing all reminders:", e);
     }
