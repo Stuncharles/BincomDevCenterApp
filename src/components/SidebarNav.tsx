@@ -157,7 +157,7 @@ export default function SidebarNav({
           {/* Admin Mode triggers selection widget */}
           {profile.role === "admin" && (
             <div className="space-y-1">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center justify-between w-full gap-1">
                 <button
                   id="nav-admin-btn"
                   onClick={() => handleTabClick("admin")}
@@ -214,7 +214,7 @@ export default function SidebarNav({
           </div>
 
           <div className="space-y-1">
-            <div className="flex items-center gap-1">
+            <div className="flex items-center justify-between w-full gap-1">
               <button
                 id="nav-meetings-btn"
                 onClick={() => handleTabClick("hub")}
@@ -256,7 +256,7 @@ export default function SidebarNav({
           </div>
 
           <div className="space-y-1">
-            <div className="flex items-center gap-1">
+            <div className="flex items-center justify-between w-full gap-1">
               <button
                 id="nav-microservices-btn"
                 onClick={() => handleTabClick("microservices")}
